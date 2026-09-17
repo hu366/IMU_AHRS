@@ -1,0 +1,5 @@
+# Python 3.11+. Versions that `pip install -r requirements.txt` can resolve.
+bleak>=0.22
+vpython>=7.6.5
+setuptools>=65,<81
+pytest>=8.0

@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "imu-viewer"
+version = "0.1.0"
+description = "IMU-AHRS PC viewer: BLE quaternion frames to a 60 Hz VPython box"
+requires-python = ">=3.11"
+readme = "README.md"
+dependencies = [
+    "bleak>=0.22",
+    "vpython>=7.6.5",
+    "setuptools>=65,<81",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+imu-viewer = "imu_viewer.main:main"
+
+[tool.setuptools.packages.find]
+include = ["imu_viewer*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
