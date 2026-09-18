@@ -231,7 +231,8 @@ static void imu_task(void *arg)
 
     const float dt_nom = 1.0f / (float)APP_SAMPLE_HZ;
 
-    /* 3.1: still-mean gyro bias in hand frame, then AHRS. Never enter realtime with unset bias. */
+    /* 3.1: still-mean gyro bias in hand frame, then AHRS. Never enter realtime with unset bias.
+       [3.2 hook] q_ref capture would go after ahrs_init. Not used: axis map is the hand frame. */
     calibrate_gyro_bias();
     ahrs_init(dt_nom);
     ESP_LOGI(TAG, "gyro bias armed; starting AHRS realtime loop");

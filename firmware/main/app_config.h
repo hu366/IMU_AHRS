@@ -29,6 +29,8 @@
 #define APP_GYRO_BIAS_MAX_STILL_RAD     0.35f   /* any-axis mean |gyro|, ~20 dps */
 #define APP_GYRO_BIAS_MAX_STILL_STD_RAD 0.10f   /* any-axis std, ~5.7 dps */
 
+/* [3.2 hook] q_ref display alignment is not enabled. Hand frame = APP_AXIS_*. */
+
 /* --- BLE（照抄，禁止改 UUID / 名字）Agent B 使用 --- */
 #define APP_BLE_DEVICE_NAME       "IMU-AHRS"
 #define APP_BLE_ENCRYPTED         0
