@@ -27,6 +27,9 @@ static const float k_accel_limit_g = (float)APP_ACCEL_FS_G * 1.5f;
 static const float k_gyro_limit_rad =
     (float)APP_GYRO_FS_DPS * 1.5f * ((float)M_PI / 180.0f);
 
+static float s_bias_g[3];
+static bool s_has_gyro_bias;
+
 static bool axis_map_valid(void)
 {
     for (int i = 0; i < 3; i++) {
@@ -69,6 +72,33 @@ void preprocess_log_mapping(void)
     }
 }
 
+void preprocess_set_gyro_bias(float bx, float by, float bz)
+{
+    if (!isfinite(bx) || !isfinite(by) || !isfinite(bz)) {
+        ESP_LOGE(TAG, "reject non-finite gyro bias");
+        return;
+    }
+    s_bias_g[0] = bx;
+    s_bias_g[1] = by;
+    s_bias_g[2] = bz;
+    s_has_gyro_bias = true;
+}
+
+void preprocess_get_gyro_bias(float out[3])
+{
+    if (out == NULL) {
+        return;
+    }
+    out[0] = s_bias_g[0];
+    out[1] = s_bias_g[1];
+    out[2] = s_bias_g[2];
+}
+
+bool preprocess_has_gyro_bias(void)
+{
+    return s_has_gyro_bias;
+}
+
 bool preprocess_sample(const imu_sample_t *raw, imu_sample_t *out)
 {
     if (raw == NULL || out == NULL || !axis_map_valid() || !finite6(raw) || !in_range(raw)) {
@@ -89,6 +119,19 @@ bool preprocess_sample(const imu_sample_t *raw, imu_sample_t *out)
     };
 
     if (!finite6(&mapped) || !in_range(&mapped)) {
+        return false;
+    }
+
+    /* [3.4 reserved] imucal scale / misalignment / accel bias: after axis map,
+       before startup gyro bias. Do not put this in mpu9250.c or ahrs.c. */
+
+    if (s_has_gyro_bias) {
+        mapped.gx -= s_bias_g[0];
+        mapped.gy -= s_bias_g[1];
+        mapped.gz -= s_bias_g[2];
+    }
+
+    if (!finite6(&mapped)) {
         return false;
     }
 

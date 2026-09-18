@@ -16,12 +16,17 @@
 #include "pose_protocol.h"
 #include "preprocess.h"
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 static const char *TAG = "imu";
 
 #define IMU_TASK_STACK        8192
 #define IMU_TASK_PRIORITY     5
 #define IMU_RETRY_DELAY_MS    1000
 #define IMU_STATS_PERIOD_S    1.0f
+#define IMU_RAD_TO_DPS        (180.0f / (float)M_PI)
 
 static float clampf(float x, float lo, float hi)
 {
@@ -83,6 +88,133 @@ static void emit_quat(const quat_t *q)
     }
 }
 
+static TickType_t sample_period_ticks(void)
+{
+    TickType_t period_ticks = pdMS_TO_TICKS(1000 / APP_SAMPLE_HZ);
+    if (period_ticks < 1) {
+        period_ticks = 1;
+    }
+    return period_ticks;
+}
+
+static bool read_mapped_sample(uint32_t sequence, imu_sample_t *mapped)
+{
+    float accel_g[3];
+    float gyro_rad[3];
+    esp_err_t err = mpu9250_read(accel_g, gyro_rad);
+    if (err != ESP_OK) {
+        return false;
+    }
+
+    const imu_sample_t raw = {
+        .ax = accel_g[0],
+        .ay = accel_g[1],
+        .az = accel_g[2],
+        .gx = gyro_rad[0],
+        .gy = gyro_rad[1],
+        .gz = gyro_rad[2],
+        .sequence = sequence,
+    };
+    return preprocess_sample(&raw, mapped);
+}
+
+/* Collect one still window. Bias is not yet set, so preprocess only axis-maps.
+   Returns true if n_valid, mean |g|, and std all pass. Writes hand-frame mean to bias[]. */
+static bool collect_gyro_bias_window(float bias[3], unsigned *n_valid_out)
+{
+    const int n_target = (int)(APP_GYRO_BIAS_S * (float)APP_SAMPLE_HZ + 0.5f);
+    const TickType_t period_ticks = sample_period_ticks();
+    TickType_t last_wake = xTaskGetTickCount();
+
+    float sum[3] = {0.0f, 0.0f, 0.0f};
+    float sum_abs[3] = {0.0f, 0.0f, 0.0f};
+    float sumsq[3] = {0.0f, 0.0f, 0.0f};
+    unsigned n_valid = 0;
+
+    for (int i = 0; i < n_target; i++) {
+        vTaskDelayUntil(&last_wake, period_ticks);
+
+        imu_sample_t mapped;
+        if (!read_mapped_sample((uint32_t)(i + 1), &mapped)) {
+            continue;
+        }
+
+        const float g[3] = {mapped.gx, mapped.gy, mapped.gz};
+        for (int a = 0; a < 3; a++) {
+            sum[a] += g[a];
+            sum_abs[a] += fabsf(g[a]);
+            sumsq[a] += g[a] * g[a];
+        }
+        n_valid++;
+    }
+
+    if (n_valid_out != NULL) {
+        *n_valid_out = n_valid;
+    }
+
+    if (n_valid < (unsigned)APP_GYRO_BIAS_MIN_SAMPLES) {
+        ESP_LOGW(TAG, "gyro bias: not enough valid samples n=%u min=%d (I2C/range drops)",
+                 n_valid, APP_GYRO_BIAS_MIN_SAMPLES);
+        return false;
+    }
+
+    const float n = (float)n_valid;
+    float mean_abs[3];
+    float std[3];
+    for (int a = 0; a < 3; a++) {
+        bias[a] = sum[a] / n;
+        mean_abs[a] = sum_abs[a] / n;
+        const float var = sumsq[a] / n - bias[a] * bias[a];
+        std[a] = sqrtf(var > 0.0f ? var : 0.0f);
+    }
+
+    ESP_LOGI(TAG,
+             "gyro still mean_abs=[%.5f, %.5f, %.5f] rad/s std=[%.5f, %.5f, %.5f] rad/s n=%u",
+             mean_abs[0], mean_abs[1], mean_abs[2], std[0], std[1], std[2], n_valid);
+
+    bool moving = false;
+    for (int a = 0; a < 3; a++) {
+        if (mean_abs[a] > APP_GYRO_BIAS_MAX_STILL_RAD) {
+            moving = true;
+        }
+        if (std[a] > APP_GYRO_BIAS_MAX_STILL_STD_RAD) {
+            moving = true;
+        }
+    }
+    if (moving) {
+        ESP_LOGW(TAG,
+                 "gyro bias: motion too large (mean |g| or std above still threshold), retry — "
+                 "do not use this window as bias");
+        return false;
+    }
+    return true;
+}
+
+static void calibrate_gyro_bias(void)
+{
+    unsigned attempt = 0;
+    float bias[3];
+
+    for (;;) {
+        attempt++;
+        ESP_LOGW(TAG, "keep still for gyro bias, %.1f s (attempt %u)",
+                 APP_GYRO_BIAS_S, attempt);
+
+        unsigned n_valid = 0;
+        if (!collect_gyro_bias_window(bias, &n_valid)) {
+            continue;
+        }
+
+        preprocess_set_gyro_bias(bias[0], bias[1], bias[2]);
+        ESP_LOGI(TAG,
+                 "gyro bias_g=[%.5f, %.5f, %.5f] rad/s ([%.3f, %.3f, %.3f] dps) n=%u",
+                 bias[0], bias[1], bias[2],
+                 bias[0] * IMU_RAD_TO_DPS, bias[1] * IMU_RAD_TO_DPS, bias[2] * IMU_RAD_TO_DPS,
+                 n_valid);
+        return;
+    }
+}
+
 static void imu_task(void *arg)
 {
     (void)arg;
@@ -98,7 +230,11 @@ static void imu_task(void *arg)
     }
 
     const float dt_nom = 1.0f / (float)APP_SAMPLE_HZ;
+
+    /* 3.1: still-mean gyro bias in hand frame, then AHRS. Never enter realtime with unset bias. */
+    calibrate_gyro_bias();
     ahrs_init(dt_nom);
+    ESP_LOGI(TAG, "gyro bias armed; starting AHRS realtime loop");
 
     uint32_t sequence = 0;
     uint32_t bad_samples = 0;
@@ -107,13 +243,11 @@ static void imu_task(void *arg)
     float dt_sum = 0.0f;
     float dt_max = 0.0f;
     float acc_sum = 0.0f;
+    float gyr_sum = 0.0f;
     int64_t t_prev_us = 0;
     int64_t stats_t0_us = esp_timer_get_time();
 
-    TickType_t period_ticks = pdMS_TO_TICKS(1000 / APP_SAMPLE_HZ);
-    if (period_ticks < 1) {
-        period_ticks = 1;
-    }
+    const TickType_t period_ticks = sample_period_ticks();
     TickType_t last_wake = xTaskGetTickCount();
 
     for (;;) {
@@ -167,6 +301,7 @@ static void imu_task(void *arg)
         emit_quat(&q);
 
         const float acc_mag = sqrtf(sample.ax * sample.ax + sample.ay * sample.ay + sample.az * sample.az);
+        const float gyr_mag = sqrtf(sample.gx * sample.gx + sample.gy * sample.gy + sample.gz * sample.gz);
         const float qn = sqrtf(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z);
         stats_n++;
         dt_sum += dt;
@@ -174,14 +309,17 @@ static void imu_task(void *arg)
             dt_max = dt;
         }
         acc_sum += acc_mag;
+        gyr_sum += gyr_mag;
 
         const float stats_age = (float)(now_us - stats_t0_us) / 1e6f;
         if (stats_age >= IMU_STATS_PERIOD_S) {
             const float dt_mean = (stats_n > 0) ? (dt_sum / (float)stats_n) : 0.0f;
             const float acc_mean = (stats_n > 0) ? (acc_sum / (float)stats_n) : 0.0f;
+            const float gyr_mean = (stats_n > 0) ? (gyr_sum / (float)stats_n) : 0.0f;
             ESP_LOGI(TAG,
-                     "stats n=%lu |q|=%.4f |a|=%.3fg dt_mean=%.4fs dt_max=%.4fs seq=%lu i2c_err=%lu bad=%lu ahrs_reset=%lu",
-                     (unsigned long)stats_n, qn, acc_mean, dt_mean, dt_max,
+                     "stats n=%lu |q|=%.4f |a|=%.3fg |g|=%.5f rad/s "
+                     "dt_mean=%.4fs dt_max=%.4fs seq=%lu i2c_err=%lu bad=%lu ahrs_reset=%lu",
+                     (unsigned long)stats_n, qn, acc_mean, gyr_mean, dt_mean, dt_max,
                      (unsigned long)sequence,
                      (unsigned long)mpu9250_i2c_error_count(),
                      (unsigned long)bad_samples,
@@ -190,6 +328,7 @@ static void imu_task(void *arg)
             dt_sum = 0.0f;
             dt_max = 0.0f;
             acc_sum = 0.0f;
+            gyr_sum = 0.0f;
             stats_t0_us = now_us;
         }
     }

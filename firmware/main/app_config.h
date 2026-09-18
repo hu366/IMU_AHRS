@@ -22,6 +22,13 @@
 #define APP_AXIS_SIGN_Y           1
 #define APP_AXIS_SIGN_Z           1
 
+/* 启动陀螺仪零偏（3.1）：每次上电静止均值，手背系 rad/s，不写 NVS。
+   MAX_STILL_* 用于拒绝运动窗口：典型静止 bias 约 1e-3～1e-1 rad/s，明显大于此则重试。 */
+#define APP_GYRO_BIAS_S                 3.0f
+#define APP_GYRO_BIAS_MIN_SAMPLES       200
+#define APP_GYRO_BIAS_MAX_STILL_RAD     0.35f   /* any-axis mean |gyro|, ~20 dps */
+#define APP_GYRO_BIAS_MAX_STILL_STD_RAD 0.10f   /* any-axis std, ~5.7 dps */
+
 /* --- BLE（照抄，禁止改 UUID / 名字）Agent B 使用 --- */
 #define APP_BLE_DEVICE_NAME       "IMU-AHRS"
 #define APP_BLE_ENCRYPTED         0
