@@ -1,6 +1,7 @@
-# Optional extra for 3.3 Allan analysis. Do not add these to imu_viewer runtime.
+# Optional extra for 3.3 Allan and 4.2 VQF compare. Do not add these to imu_viewer runtime.
 numpy>=1.24
 pandas>=2.0
 scipy>=1.10
 allan-variance>=1.0
 pyserial>=3.5
+vqf>=2.0

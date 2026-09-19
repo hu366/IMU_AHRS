@@ -1,0 +1,18 @@
+VQF vs Madgwick (same 6DoF CSV, PC offline)
+source=synthetic recorded_algo=synthetic
+fs=100 Hz  n=500
+
+metric                   madgwick     vqf          delta
+still_tilt_std_deg       0.3834       0.3622       -0.05525
+yaw_drift_deg_per_min    0.162        0.4042       1.496
+static_tilt_err_deg      0.6522       0.7303       0.1196
+recover_s                n/a          n/a          n/a
+quat_jitter_rms_deg      0.1146       0.035        -0.6945
+port_err_mean_deg        (device)     n/a          p95=n/a
+fs_hz                    100  n=500  still_n=500
+
+delta = (vqf - madgwick) / madgwick. Smaller tilt/yaw/jitter is better.
+6D cannot remove yaw around gravity; yaw_drift is relative, not heading.
+port_err is firmware q vs official VQF (not the algorithm-quality row).
+port replay uses firmware nominal Ts (header nominal_fs); quality replay uses t_us.
+port check: no device quaternion column in this CSV.

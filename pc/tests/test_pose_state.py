@@ -74,6 +74,28 @@ def test_disconnect_keeps_last_quaternion():
     assert snap.has_pose is True
 
 
+def test_illegal_frames_keep_last_pose():
+    """4.3: drop NaN/Inf/|q|<1e-6/|q|>2; cube stays on last valid quat."""
+    store = PoseStore()
+    dec = ProtocolDecoder()
+    good = dec.feed(b"Q,0.0000,1.0000,0.0000,0.0000\n")
+    store.ingest(good, decoder=dec)
+    dropped = dec.feed(
+        b"Q,nan,0,0,0\n"
+        b"Q,inf,0,0,0\n"
+        b"Q,0,0,0,0\n"
+        b"Q,3,0,0,0\n"
+        b"Q,1e-7,0,0,0\n"
+    )
+    assert dropped == []
+    store.ingest(dropped, decoder=dec)
+    snap = store.snapshot()
+    assert snap.pose.quaternion == pytest.approx((0.0, 1.0, 0.0, 0.0))
+    assert snap.has_pose is True
+    assert snap.frames_ok == 1
+    assert snap.frames_drop >= 5
+
+
 def test_ingest_copies_decoder_stats():
     dec = ProtocolDecoder()
     dec.feed(b"Q,abc,0,0,0\nQ,1.0000,0.0000,0.0000,0.0000\n")

@@ -7,8 +7,20 @@
 #define APP_MPU9250_ADDR          0x68      /* AD0=GND；若为 0x69 只改这里 */
 #define APP_SAMPLE_HZ             100
 #define APP_ACCEL_FS_G            2         /* ±2 g */
-#define APP_GYRO_FS_DPS           250       /* ±250 dps；换算成 rad/s 后再进 Madgwick */
-#define APP_MADGWICK_BETA         0.1f
+#define APP_GYRO_FS_DPS           250       /* ±250 dps；换算成 rad/s 后再进 AHRS */
+#define APP_MADGWICK_BETA         0.1f      /* 仅 APP_AHRS_ALGO=MADGWICK 时使用 */
+
+#define APP_AHRS_ALGO_MADGWICK    0
+#define APP_AHRS_ALGO_VQF         1
+#define APP_AHRS_ALGO             APP_AHRS_ALGO_VQF   /* 默认 VQF；对照时改回 0 */
+
+#define APP_VQF_TAU_ACC           3.0f    /* 官方默认量级，先不要调 */
+#define APP_VQF_MOTION_BIAS       1
+#define APP_VQF_REST_BIAS         1
+/* VQF getQuat6D 与内部 quatRotate 把传感器矢量转到地球系，与现网 Madgwick/PC
+   body→world 一致。若验收时方块相对 Madgwick 时期反向，改成 1，不要改 PC 轴映射。 */
+#define APP_VQF_CONJUGATE_OUTPUT  0
+#define APP_GRAVITY_MPS2          9.80665f  /* ahrs 把 g 转成 m/s² 再送 VQF；预处理仍是 g */
 #define APP_WHOAMI_MPU9250        0x71
 #define APP_WHOAMI_MPU9255        0x73
 #define APP_WHOAMI_MPU6500        0x70
@@ -36,6 +48,17 @@
    Dump is axis-mapped, before 3.1 bias subtract. */
 #define APP_LOG_STILL_CSV           0
 #define APP_LOG_STILL_CSV_S         60.0f
+
+/* [4.2] UART AHRS CSV for PC offline VQF vs Madgwick. Off by default.
+   Set to 1, flash, then (do not also run idf.py monitor):
+     python -m analysis.capture_ahrs --port COMx
+   Dump starts after 3.1 bias + ahrs_init. Rows are the ahrs_update input
+   (hand frame, bias subtracted, accel g) plus the device quaternion.
+   100 Hz x 11 columns is tight at 115200: stats logs are paused during dump.
+   If rows drop, raise CONFIG_ESP_CONSOLE_UART_BAUDRATE to 921600 for the
+   recording firmware only, then restore. Do not decimate (VQF uses fixed Ts). */
+#define APP_LOG_AHRS_CSV            0
+#define APP_LOG_AHRS_CSV_S          120.0f
 
 /* --- BLE（照抄，禁止改 UUID / 名字）Agent B 使用 --- */
 #define APP_BLE_DEVICE_NAME       "IMU-AHRS"

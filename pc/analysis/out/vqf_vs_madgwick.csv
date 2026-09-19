@@ -1,0 +1,9 @@
+metric,madgwick,vqf,delta
+still_tilt_std_deg,0.3834,0.3622,-0.05525
+yaw_drift_deg_per_min,0.162,0.4042,1.496
+static_tilt_err_deg,0.6522,0.7303,0.1196
+recover_s,n/a,n/a,n/a
+quat_jitter_rms_deg,0.1146,0.035,-0.6945
+port_err_mean_deg,n/a,n/a,n/a
+port_err_p95_deg,n/a,n/a,n/a
+fs_hz,100,n=500,still_n=500

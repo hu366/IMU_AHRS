@@ -14,6 +14,8 @@ firmware/dependencies.lock
 # 3.3 generated Allan outputs (keep analysis/data/)
 pc/analysis/out/*
 !pc/analysis/out/.gitkeep
+!pc/analysis/out/vqf_vs_madgwick.csv
+!pc/analysis/out/vqf_compare.txt
 pc/analysis/data/still.log
 
 # Python

@@ -106,6 +106,13 @@ def test_zero_norm_dropped():
     assert dec.parse_errors == 1
 
 
+def test_norm_below_1e_6_dropped():
+    dec = ProtocolDecoder()
+    assert dec.feed(b"Q,1e-7,0,0,0\n") == []
+    assert dec.frames_drop == 1
+    assert dec.parse_errors == 1
+
+
 def test_norm_above_two_dropped():
     dec = ProtocolDecoder()
     assert dec.feed(b"Q,3,0,0,0\n") == []

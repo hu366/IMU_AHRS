@@ -23,7 +23,7 @@
 
 static const char *TAG = "imu";
 
-#define IMU_TASK_STACK        8192
+#define IMU_TASK_STACK        10240
 #define IMU_TASK_PRIORITY     5
 #define IMU_RETRY_DELAY_MS    1000
 #define IMU_STATS_PERIOD_S    1.0f
@@ -52,9 +52,15 @@ static bool init_sensor(void)
         .sample_hz = APP_SAMPLE_HZ,
     };
 
-    ESP_LOGI(TAG, "I2C SDA=%d SCL=%d addr=0x%02X freq=%d sample=%d Hz accel=±%dg gyro=±%d dps beta=%.3f",
+#if APP_AHRS_ALGO == APP_AHRS_ALGO_VQF
+    ESP_LOGI(TAG, "I2C SDA=%d SCL=%d addr=0x%02X freq=%d sample=%d Hz accel=±%dg gyro=±%d dps algo=VQF 6D",
+             APP_I2C_SDA_GPIO, APP_I2C_SCL_GPIO, APP_MPU9250_ADDR, APP_I2C_FREQ_HZ,
+             APP_SAMPLE_HZ, APP_ACCEL_FS_G, APP_GYRO_FS_DPS);
+#else
+    ESP_LOGI(TAG, "I2C SDA=%d SCL=%d addr=0x%02X freq=%d sample=%d Hz accel=±%dg gyro=±%d dps algo=Madgwick beta=%.3f",
              APP_I2C_SDA_GPIO, APP_I2C_SCL_GPIO, APP_MPU9250_ADDR, APP_I2C_FREQ_HZ,
              APP_SAMPLE_HZ, APP_ACCEL_FS_G, APP_GYRO_FS_DPS, APP_MADGWICK_BETA);
+#endif
     preprocess_log_mapping();
 
     esp_err_t err = mpu9250_init(&cfg);
@@ -80,13 +86,14 @@ static bool init_sensor(void)
 
 static void emit_quat(const quat_t *q)
 {
-    printf("Q,%.4f,%.4f,%.4f,%.4f\n", q->w, q->x, q->y, q->z);
-
     char line[POSE_PROTOCOL_BUF_LEN];
     int n = pose_protocol_encode(q, line, sizeof(line));
-    if (n > 0) {
-        (void)ble_send_line(line, (size_t)n);
+    if (n <= 0) {
+        return;
     }
+    /* UART and BLE share this buffer so |q| and text match (4.3). */
+    printf("%s", line);
+    (void)ble_send_line(line, (size_t)n);
 }
 
 static TickType_t sample_period_ticks(void)
@@ -283,8 +290,24 @@ static void imu_task(void *arg)
     float dt_max = 0.0f;
     float acc_sum = 0.0f;
     float gyr_sum = 0.0f;
+    uint32_t ahrs_us_sum = 0;
+    uint32_t ahrs_us_max = 0;
     int64_t t_prev_us = 0;
     int64_t stats_t0_us = esp_timer_get_time();
+#if APP_LOG_AHRS_CSV
+    const int ahrs_csv_target = (int)(APP_LOG_AHRS_CSV_S * (float)APP_SAMPLE_HZ + 0.5f);
+    unsigned ahrs_csv_n = 0;
+    bool ahrs_csv_active = true;
+    bool ahrs_csv_header = false;
+    int64_t ahrs_csv_t0_us = 0;
+#if APP_AHRS_ALGO == APP_AHRS_ALGO_VQF
+    const char *ahrs_csv_algo = "vqf-c";
+#else
+    const char *ahrs_csv_algo = "madgwick";
+#endif
+    ESP_LOGW(TAG, "UART AHRS CSV dump, %.1f s (4.2, bias_subtracted=1, algo=%s)",
+             APP_LOG_AHRS_CSV_S, ahrs_csv_algo);
+#endif
 
     const TickType_t period_ticks = sample_period_ticks();
     TickType_t last_wake = xTaskGetTickCount();
@@ -330,7 +353,10 @@ static void imu_task(void *arg)
         }
 
         quat_t q;
-        if (!ahrs_update(&sample, dt_used, &q)) {
+        const int64_t ahrs_t0_us = esp_timer_get_time();
+        const bool ahrs_ok = ahrs_update(&sample, dt_used, &q);
+        const uint32_t ahrs_us = (uint32_t)(esp_timer_get_time() - ahrs_t0_us);
+        if (!ahrs_ok) {
             ahrs_resets++;
             ESP_LOGW(TAG, "ahrs update failed/reset count=%lu seq=%lu dt=%.4f",
                      (unsigned long)ahrs_resets, (unsigned long)sequence, dt_used);
@@ -339,10 +365,40 @@ static void imu_task(void *arg)
 
         emit_quat(&q);
 
+#if APP_LOG_AHRS_CSV
+        if (ahrs_csv_active) {
+            if (!ahrs_csv_header) {
+                printf("# ahrs_csv source=esp32-c3 algo=%s accel_unit=g gyro_unit=rad/s "
+                       "frame=hand bias_subtracted=1 nominal_fs=%d\n",
+                       ahrs_csv_algo, APP_SAMPLE_HZ);
+                printf("t_us,gx,gy,gz,ax,ay,az,qw,qx,qy,qz\n");
+                ahrs_csv_header = true;
+                ahrs_csv_t0_us = now_us;
+            }
+            printf("%" PRId64 ",%.7g,%.7g,%.7g,%.5g,%.5g,%.5g,%.7g,%.7g,%.7g,%.7g\n",
+                   now_us, sample.gx, sample.gy, sample.gz,
+                   sample.ax, sample.ay, sample.az,
+                   q.w, q.x, q.y, q.z);
+            ahrs_csv_n++;
+            const float dump_age = (float)(now_us - ahrs_csv_t0_us) / 1e6f;
+            if ((int)ahrs_csv_n >= ahrs_csv_target || dump_age >= APP_LOG_AHRS_CSV_S) {
+                ESP_LOGI(TAG, "ahrs CSV dump done n=%u target=%d", ahrs_csv_n, ahrs_csv_target);
+                ahrs_csv_active = false;
+                stats_t0_us = now_us;
+            } else {
+                continue; /* pause 1 Hz stats so 115200 can carry 100 Hz CSV */
+            }
+        }
+#endif
+
         const float acc_mag = sqrtf(sample.ax * sample.ax + sample.ay * sample.ay + sample.az * sample.az);
         const float gyr_mag = sqrtf(sample.gx * sample.gx + sample.gy * sample.gy + sample.gz * sample.gz);
         const float qn = sqrtf(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z);
         stats_n++;
+        ahrs_us_sum += ahrs_us;
+        if (ahrs_us > ahrs_us_max) {
+            ahrs_us_max = ahrs_us;
+        }
         dt_sum += dt;
         if (dt > dt_max) {
             dt_max = dt;
@@ -355,10 +411,13 @@ static void imu_task(void *arg)
             const float dt_mean = (stats_n > 0) ? (dt_sum / (float)stats_n) : 0.0f;
             const float acc_mean = (stats_n > 0) ? (acc_sum / (float)stats_n) : 0.0f;
             const float gyr_mean = (stats_n > 0) ? (gyr_sum / (float)stats_n) : 0.0f;
+            const uint32_t ahrs_us_mean = (stats_n > 0) ? (ahrs_us_sum / stats_n) : 0;
             ESP_LOGI(TAG,
                      "stats n=%lu |q|=%.4f |a|=%.3fg |g|=%.5f rad/s "
-                     "dt_mean=%.4fs dt_max=%.4fs seq=%lu i2c_err=%lu bad=%lu ahrs_reset=%lu",
+                     "dt_mean=%.4fs dt_max=%.4fs ahrs_us_mean=%lu ahrs_us_max=%lu "
+                     "seq=%lu i2c_err=%lu bad=%lu ahrs_reset=%lu",
                      (unsigned long)stats_n, qn, acc_mean, gyr_mean, dt_mean, dt_max,
+                     (unsigned long)ahrs_us_mean, (unsigned long)ahrs_us_max,
                      (unsigned long)sequence,
                      (unsigned long)mpu9250_i2c_error_count(),
                      (unsigned long)bad_samples,
@@ -368,6 +427,8 @@ static void imu_task(void *arg)
             dt_max = 0.0f;
             acc_sum = 0.0f;
             gyr_sum = 0.0f;
+            ahrs_us_sum = 0;
+            ahrs_us_max = 0;
             stats_t0_us = now_us;
         }
     }

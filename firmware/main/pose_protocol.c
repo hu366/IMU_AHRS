@@ -20,8 +20,8 @@ static bool quat_is_finite(const quat_t *q)
 static bool quat_norm_ok(const quat_t *q)
 {
     const float n2 = q->w * q->w + q->x * q->x + q->y * q->y + q->z * q->z;
-    /* Agent C: reject magnitude < 1e-6 or > 2. Compare n2 to avoid sqrt. */
-    return (n2 >= 1e-12f) && (n2 <= 4.0f);
+    /* 4.3 wire gate: emitted |q| in (0.99, 1.01). Compare n2 to avoid sqrt. */
+    return (n2 > 0.99f * 0.99f) && (n2 < 1.01f * 1.01f);
 }
 
 int pose_protocol_encode(const quat_t *q, char *buf, size_t buf_len)
@@ -99,6 +99,18 @@ int pose_protocol_self_test(void)
     quat_t q_zero = { .w = 0.f, .x = 0.f, .y = 0.f, .z = 0.f };
     if (pose_protocol_encode(&q_zero, buf, sizeof(buf)) != -1) {
         ESP_LOGE(TAG, "zero quat should fail");
+        fails++;
+    }
+
+    quat_t q_long = { .w = 2.f, .x = 0.f, .y = 0.f, .z = 0.f };
+    if (pose_protocol_encode(&q_long, buf, sizeof(buf)) != -1) {
+        ESP_LOGE(TAG, "|q|=2 should fail");
+        fails++;
+    }
+
+    quat_t q_short = { .w = 0.5f, .x = 0.f, .y = 0.f, .z = 0.f };
+    if (pose_protocol_encode(&q_short, buf, sizeof(buf)) != -1) {
+        ESP_LOGE(TAG, "|q|=0.5 should fail");
         fails++;
     }
 
