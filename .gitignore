@@ -11,6 +11,11 @@ firmware/sdkconfig.old
 firmware/managed_components/
 firmware/dependencies.lock
 
+# 3.3 generated Allan outputs (keep analysis/data/)
+pc/analysis/out/*
+!pc/analysis/out/.gitkeep
+pc/analysis/data/still.log
+
 # Python
 __pycache__/
 *.py[cod]

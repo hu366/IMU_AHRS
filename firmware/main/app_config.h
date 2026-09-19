@@ -29,7 +29,13 @@
 #define APP_GYRO_BIAS_MAX_STILL_RAD     0.35f   /* any-axis mean |gyro|, ~20 dps */
 #define APP_GYRO_BIAS_MAX_STILL_STD_RAD 0.10f   /* any-axis std, ~5.7 dps */
 
-/* [3.2 hook] q_ref display alignment is not enabled. Hand frame = APP_AXIS_*. */
+/* [3.3] UART still CSV for PC Allan. Off by default — not in the AHRS loop.
+   Set to 1, flash, then open the Python monitor (it writes still.log):
+     python -m analysis.capture_still --port COMx --analyze
+   Raise S (e.g. 300) if you need bias-instability tau; 60 s is enough for white noise.
+   Dump is axis-mapped, before 3.1 bias subtract. */
+#define APP_LOG_STILL_CSV           0
+#define APP_LOG_STILL_CSV_S         60.0f
 
 /* --- BLE（照抄，禁止改 UUID / 名字）Agent B 使用 --- */
 #define APP_BLE_DEVICE_NAME       "IMU-AHRS"

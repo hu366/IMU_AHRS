@@ -16,12 +16,19 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+analysis = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "scipy>=1.10",
+    "allan-variance>=1.0",
+    "pyserial>=3.5",
+]
 
 [project.scripts]
 imu-viewer = "imu_viewer.main:main"
 
 [tool.setuptools.packages.find]
-include = ["imu_viewer*"]
+include = ["imu_viewer*", "analysis*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

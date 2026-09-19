@@ -68,7 +68,6 @@ bool ahrs_update(const imu_sample_t *sample, float dt, quat_t *out)
     q.x /= n;
     q.y /= n;
     q.z /= n;
-    /* [3.2 hook] optional: *out = conj(q_ref) ⊗ q. Do not put this in mpu9250.c. */
     *out = q;
     return true;
 }

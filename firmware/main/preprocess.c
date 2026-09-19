@@ -122,9 +122,6 @@ bool preprocess_sample(const imu_sample_t *raw, imu_sample_t *out)
         return false;
     }
 
-    /* [3.4 reserved] imucal scale / misalignment / accel bias: after axis map,
-       before startup gyro bias. Do not put this in mpu9250.c or ahrs.c. */
-
     if (s_has_gyro_bias) {
         mapped.gx -= s_bias_g[0];
         mapped.gy -= s_bias_g[1];

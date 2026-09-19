@@ -1,5 +1,6 @@
 #include "imu_task.h"
 
+#include <inttypes.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <math.h>
@@ -190,6 +191,40 @@ static bool collect_gyro_bias_window(float bias[3], unsigned *n_valid_out)
     return true;
 }
 
+#if APP_LOG_STILL_CSV
+/* PC Allan (3.3): UART dump only. No ADEV, no sliding buffer, not in the realtime loop.
+   Bias is not set yet, so preprocess_sample is axis-map only. */
+static void log_still_csv(void)
+{
+    const int n_target = (int)(APP_LOG_STILL_CSV_S * (float)APP_SAMPLE_HZ + 0.5f);
+    const TickType_t period_ticks = sample_period_ticks();
+    TickType_t last_wake = xTaskGetTickCount();
+    unsigned n_valid = 0;
+
+    ESP_LOGW(TAG, "keep still for UART CSV dump, %.1f s (3.3 Allan, bias_subtracted=0)",
+             APP_LOG_STILL_CSV_S);
+    printf("# still_csv source=esp32-c3 accel_unit=g gyro_unit=rad/s frame=hand bias_subtracted=0\n");
+    printf("t_us,gx,gy,gz,ax,ay,az\n");
+
+    for (int i = 0; i < n_target; i++) {
+        vTaskDelayUntil(&last_wake, period_ticks);
+
+        imu_sample_t mapped;
+        if (!read_mapped_sample((uint32_t)(i + 1), &mapped)) {
+            continue;
+        }
+
+        const int64_t t_us = esp_timer_get_time();
+        printf("%" PRId64 ",%.7g,%.7g,%.7g,%.5g,%.5g,%.5g\n",
+               t_us, mapped.gx, mapped.gy, mapped.gz,
+               mapped.ax, mapped.ay, mapped.az);
+        n_valid++;
+    }
+
+    ESP_LOGI(TAG, "still CSV dump done n=%u target=%d", n_valid, n_target);
+}
+#endif
+
 static void calibrate_gyro_bias(void)
 {
     unsigned attempt = 0;
@@ -232,7 +267,10 @@ static void imu_task(void *arg)
     const float dt_nom = 1.0f / (float)APP_SAMPLE_HZ;
 
     /* 3.1: still-mean gyro bias in hand frame, then AHRS. Never enter realtime with unset bias.
-       [3.2 hook] q_ref capture would go after ahrs_init. Not used: axis map is the hand frame. */
+       [3.3] Optional UART still CSV is before 3.1 (uncompensated mapped gyro). Allan stays on PC. */
+#if APP_LOG_STILL_CSV
+    log_still_csv();
+#endif
     calibrate_gyro_bias();
     ahrs_init(dt_nom);
     ESP_LOGI(TAG, "gyro bias armed; starting AHRS realtime loop");
