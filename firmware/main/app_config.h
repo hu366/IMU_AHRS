@@ -5,6 +5,9 @@
 #define APP_I2C_SCL_GPIO          7
 #define APP_I2C_FREQ_HZ           400000
 #define APP_MPU9250_ADDR          0x68      /* AD0=GND；若为 0x69 只改这里 */
+#define APP_MPU9250_INT_GPIO      10        /* MPU9250 INT/DATA_RDY, 3.3 V active-high */
+#define APP_MPU9250_INT_ACTIVE_HIGH 1
+#define APP_IMU_TRIGGER_QUEUE_LEN 8
 #define APP_SAMPLE_HZ             100
 #define APP_ACCEL_FS_G            2         /* ±2 g */
 #define APP_GYRO_FS_DPS           250       /* ±250 dps；换算成 rad/s 后再进 AHRS */
@@ -60,12 +63,35 @@
 #define APP_LOG_AHRS_CSV            0
 #define APP_LOG_AHRS_CSV_S          120.0f
 
+/* QT is a BLE transport frame in normal operation. Per-sample UART output at
+   100 Hz competes with the realtime task, especially while NimBLE logs TX. */
+#define APP_LOG_QT_UART             0
+
 /* --- BLE（照抄，禁止改 UUID / 名字）Agent B 使用 --- */
 #define APP_BLE_DEVICE_NAME       "IMU-AHRS"
 #define APP_BLE_ENCRYPTED         0
+
+/* The PC receives a continuous 100 Hz pose stream. Keep a short, zero-
+   latency BLE connection interval so QT transport does not delay TSR clock
+   synchronization. Units are BLE's 1.25 ms interval and 10 ms timeout. */
+#define APP_BLE_CONN_ITVL_MIN      12        /* 15 ms */
+#define APP_BLE_CONN_ITVL_MAX      16        /* 20 ms */
+#define APP_BLE_CONN_LATENCY       0
+#define APP_BLE_SUPERVISION_TIMEOUT 400      /* 4 s */
 
 /* Fake quaternion Notify for INT-01 without MPU. Keep 1 until WHO_AM_I
    succeeds; imu_task only calls ble_send_line after AHRS, so dual TX
    cannot happen while I2C probe fails. Set to 0 when IMU Notify is live. */
 #define APP_BLE_FAKE_QUAT         0
 #define APP_BLE_FAKE_HZ           50
+
+/* ESP32 RX -> TX clock-sync service. */
+#define APP_TIME_SYNC_QUEUE_LEN   8
+#define APP_TIME_SYNC_LINE_LEN    64
+
+/* IMU samples must never wait for BLE. This queue is consumed by a separate
+   low-priority TX task; a full queue drops an outbound QT rather than a
+   DATA_RDY-triggered sample. */
+#define APP_BLE_TX_QUEUE_LEN       16
+#define APP_BLE_TX_BATCH_WAIT_MS   20
+#define APP_BLE_TX_BATCH_BYTES     480

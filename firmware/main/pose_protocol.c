@@ -1,6 +1,7 @@
 #include "pose_protocol.h"
 
 #include <math.h>
+#include <inttypes.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -38,13 +39,44 @@ int pose_protocol_encode(const quat_t *q, char *buf, size_t buf_len)
 
     const int n = snprintf(buf, buf_len, "Q,%.4f,%.4f,%.4f,%.4f\n",
                            q->w, q->x, q->y, q->z);
-    if (n < 0 || (size_t)n >= buf_len || buf[n - 1] != '\n') {
+    if (n <= 0 || (size_t)n >= buf_len || buf[n - 1] != '\n') {
         s_encode_fail++;
         ESP_LOGW(TAG, "encode truncated/no NL n=%d buf_len=%u fail=%u",
                  n, (unsigned)buf_len, s_encode_fail);
         return -1;
     }
 
+    s_encode_ok++;
+    return n;
+}
+
+int pose_protocol_encode_timed(const quat_t *q,
+                               uint32_t boot_id,
+                               uint32_t sequence,
+                               int64_t t_data_ready_us,
+                               char *buf,
+                               size_t buf_len)
+{
+    if (q == NULL || buf == NULL || buf_len == 0) {
+        s_encode_fail++;
+        return -1;
+    }
+    if (!quat_is_finite(q) || !quat_norm_ok(q)) {
+        s_encode_fail++;
+        ESP_LOGW(TAG, "reject timed encode fail=%u (nan/inf or bad |q|)", s_encode_fail);
+        return -1;
+    }
+
+    const int n = snprintf(buf, buf_len,
+                           "QT,%" PRIu32 ",%" PRIu32 ",%" PRId64 ",%.4f,%.4f,%.4f,%.4f\n",
+                           boot_id, sequence, t_data_ready_us,
+                           q->w, q->x, q->y, q->z);
+    if (n <= 0 || (size_t)n >= buf_len || buf[n - 1] != '\n') {
+        s_encode_fail++;
+        ESP_LOGW(TAG, "timed encode truncated/no NL n=%d buf_len=%u fail=%u",
+                 n, (unsigned)buf_len, s_encode_fail);
+        return -1;
+    }
     s_encode_ok++;
     return n;
 }
@@ -74,6 +106,29 @@ int pose_protocol_self_test(void)
         fails++;
     } else {
         ESP_LOGI(TAG, "vector sample ok (%d bytes)", n);
+    }
+
+    const char *exp_timed = "QT,39182744,1523,987654321,0.9981,0.0123,-0.0310,0.0512\n";
+    n = pose_protocol_encode_timed(&q_sample, 39182744u, 1523u, 987654321,
+                                   buf, sizeof(buf));
+    if (n != (int)strlen(exp_timed) || memcmp(buf, exp_timed, (size_t)n) != 0) {
+        ESP_LOGE(TAG, "timed vector mismatch n=%d got='%s'", n, n > 0 ? buf : "");
+        fails++;
+    } else {
+        ESP_LOGI(TAG, "timed vector ok (%d bytes)", n);
+    }
+
+    n = pose_protocol_encode_timed(&q_ident, 1u, 2u, -3, buf, sizeof(buf));
+    if (n <= 0 || strncmp(buf, "QT,1,2,-3,", 10) != 0) {
+        ESP_LOGE(TAG, "timed negative timestamp should encode");
+        fails++;
+    }
+
+    char timed_tiny[16];
+    if (pose_protocol_encode_timed(&q_ident, 1u, 2u, 3, timed_tiny,
+                                   sizeof(timed_tiny)) != -1) {
+        ESP_LOGE(TAG, "timed short buffer should fail");
+        fails++;
     }
 
     char tiny[8];

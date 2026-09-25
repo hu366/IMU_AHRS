@@ -116,6 +116,7 @@ bool preprocess_sample(const imu_sample_t *raw, imu_sample_t *out)
         .gy = (float)k_sign[1] * gyr_s[k_permute[1]],
         .gz = (float)k_sign[2] * gyr_s[k_permute[2]],
         .sequence = raw->sequence,
+        .t_data_ready_us = raw->t_data_ready_us,
     };
 
     if (!finite6(&mapped) || !in_range(&mapped)) {

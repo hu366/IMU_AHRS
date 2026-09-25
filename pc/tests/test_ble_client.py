@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import ast
 import inspect
+import logging
 from pathlib import Path
 
 import pytest
 
 from imu_viewer.ble_client import BleClient, NotifyHandler
+from imu_viewer.clock_sync import AffineClockMapper
 from imu_viewer.pose_state import PoseStore
 
 _PC_ROOT = Path(__file__).resolve().parents[1]
@@ -48,6 +50,54 @@ def test_ble_client_handle_notify_is_protocol_feed():
     client.handle_notify("char", b"Q,1.0000,0.0000,0.0000,0.0000\n")
     assert store.snapshot().has_pose is True
     assert client.decoder.frames_ok == 1
+
+
+def test_notify_captures_t4_and_dispatches_tsr_to_clock_mapper():
+    values = iter([2_001_000])
+    mapper = AffineClockMapper(min_samples=2)
+    client = BleClient(
+        PoseStore(),
+        print_frames=False,
+        clock_mapper=mapper,
+        monotonic_ns=lambda: next(values),
+    )
+    client._pending_sync[12] = 1_999_000
+    client.handle_notify("char", b"TSR,9,12,1000,1001\n")
+    assert mapper.quality().boot_id == 9
+    assert mapper.exchanges[0].t4_pc_ns == 2_001_000
+    assert mapper.exchanges[0].t1_pc_ns == 1_999_000
+
+
+def test_sync_report_prints_quality_fields(caplog):
+    values = iter([2_001_000])
+    mapper = AffineClockMapper(min_samples=2)
+    client = BleClient(
+        PoseStore(),
+        print_frames=False,
+        clock_mapper=mapper,
+        sync_report=True,
+        monotonic_ns=lambda: next(values),
+    )
+    client._pending_sync[12] = 1_999_000
+    with caplog.at_level(logging.INFO, logger="imu_viewer.ble"):
+        client.handle_notify("char", b"TSR,9,12,1000,1001\n")
+    assert "SYNC boot_id=9 id=12" in caplog.text
+    assert "ready=False" in caplog.text
+    assert "write_call_ms=" in caplog.text
+    assert "esp_service_ms=" in caplog.text
+    assert "rtt_min_ms=" in caplog.text
+    assert "residual_rms_ms=" in caplog.text
+
+
+def test_qt_new_boot_invalidates_old_clock_mapping_and_keeps_pose_display():
+    mapper = AffineClockMapper(min_samples=2)
+    store = PoseStore()
+    client = BleClient(store, print_frames=False, clock_mapper=mapper)
+    client.handle_notify("char", b"QT,77,3,456,1,0,0,0\n")
+    assert mapper.boot_id == 77
+    snap = store.snapshot()
+    assert snap.has_pose is True
+    assert snap.pose.sequence == 3
 
 
 def test_ble_and_protocol_modules_do_not_import_vpython():

@@ -12,6 +12,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "imu_trigger.h"
 #include "imu_types.h"
 #include "mpu9250.h"
 #include "pose_protocol.h"
@@ -81,36 +82,49 @@ static bool init_sensor(void)
 
     const uint8_t id = mpu9250_whoami();
     ESP_LOGI(TAG, "init ok WHO_AM_I=0x%02X (%s)", id, mpu9250_whoami_name(id));
+    if (mpu9250_enable_data_ready(APP_MPU9250_INT_ACTIVE_HIGH != 0) != ESP_OK) {
+        ESP_LOGE(TAG, "failed to enable MPU9250 DATA_RDY");
+        return false;
+    }
     return true;
 }
 
-static void emit_quat(const quat_t *q)
+static void emit_quat(const imu_sample_t *sample, const quat_t *q)
 {
     char line[POSE_PROTOCOL_BUF_LEN];
-    int n = pose_protocol_encode(q, line, sizeof(line));
+    int n = pose_protocol_encode_timed(q, ble_app_boot_id(), sample->sequence,
+                                       sample->t_data_ready_us, line, sizeof(line));
     if (n <= 0) {
         return;
     }
-    /* UART and BLE share this buffer so |q| and text match (4.3). */
+    /* UART QT streaming is diagnostic-only. Printing each frame can block
+     * long enough to lose a following DATA_RDY while BLE is active. */
+#if APP_LOG_QT_UART
     printf("%s", line);
+#endif
     (void)ble_send_line(line, (size_t)n);
 }
 
-static TickType_t sample_period_ticks(void)
+static bool wait_and_read_mapped_sample(int64_t *t_data_ready_us,
+                                        uint32_t *pending_notifications,
+                                        imu_sample_t *mapped)
 {
-    TickType_t period_ticks = pdMS_TO_TICKS(1000 / APP_SAMPLE_HZ);
-    if (period_ticks < 1) {
-        period_ticks = 1;
+    if (t_data_ready_us == NULL || mapped == NULL) {
+        return false;
     }
-    return period_ticks;
-}
+    uint32_t data_ready_sequence = 0;
+    if (!imu_trigger_wait(t_data_ready_us, portMAX_DELAY, pending_notifications,
+                          &data_ready_sequence)) {
+        return false;
+    }
 
-static bool read_mapped_sample(uint32_t sequence, imu_sample_t *mapped)
-{
     float accel_g[3];
     float gyro_rad[3];
     esp_err_t err = mpu9250_read(accel_g, gyro_rad);
     if (err != ESP_OK) {
+        return false;
+    }
+    if (!imu_trigger_finish_read(data_ready_sequence)) {
         return false;
     }
 
@@ -121,7 +135,8 @@ static bool read_mapped_sample(uint32_t sequence, imu_sample_t *mapped)
         .gx = gyro_rad[0],
         .gy = gyro_rad[1],
         .gz = gyro_rad[2],
-        .sequence = sequence,
+        .sequence = data_ready_sequence,
+        .t_data_ready_us = *t_data_ready_us,
     };
     return preprocess_sample(&raw, mapped);
 }
@@ -131,19 +146,17 @@ static bool read_mapped_sample(uint32_t sequence, imu_sample_t *mapped)
 static bool collect_gyro_bias_window(float bias[3], unsigned *n_valid_out)
 {
     const int n_target = (int)(APP_GYRO_BIAS_S * (float)APP_SAMPLE_HZ + 0.5f);
-    const TickType_t period_ticks = sample_period_ticks();
-    TickType_t last_wake = xTaskGetTickCount();
-
     float sum[3] = {0.0f, 0.0f, 0.0f};
     float sum_abs[3] = {0.0f, 0.0f, 0.0f};
     float sumsq[3] = {0.0f, 0.0f, 0.0f};
     unsigned n_valid = 0;
 
     for (int i = 0; i < n_target; i++) {
-        vTaskDelayUntil(&last_wake, period_ticks);
-
+        int64_t t_data_ready_us = 0;
+        uint32_t pending_notifications = 0;
         imu_sample_t mapped;
-        if (!read_mapped_sample((uint32_t)(i + 1), &mapped)) {
+        if (!wait_and_read_mapped_sample(&t_data_ready_us, &pending_notifications,
+                                         &mapped)) {
             continue;
         }
 
@@ -204,8 +217,6 @@ static bool collect_gyro_bias_window(float bias[3], unsigned *n_valid_out)
 static void log_still_csv(void)
 {
     const int n_target = (int)(APP_LOG_STILL_CSV_S * (float)APP_SAMPLE_HZ + 0.5f);
-    const TickType_t period_ticks = sample_period_ticks();
-    TickType_t last_wake = xTaskGetTickCount();
     unsigned n_valid = 0;
 
     ESP_LOGW(TAG, "keep still for UART CSV dump, %.1f s (3.3 Allan, bias_subtracted=0)",
@@ -214,16 +225,16 @@ static void log_still_csv(void)
     printf("t_us,gx,gy,gz,ax,ay,az\n");
 
     for (int i = 0; i < n_target; i++) {
-        vTaskDelayUntil(&last_wake, period_ticks);
-
+        int64_t t_data_ready_us = 0;
+        uint32_t pending_notifications = 0;
         imu_sample_t mapped;
-        if (!read_mapped_sample((uint32_t)(i + 1), &mapped)) {
+        if (!wait_and_read_mapped_sample(&t_data_ready_us, &pending_notifications,
+                                         &mapped)) {
             continue;
         }
 
-        const int64_t t_us = esp_timer_get_time();
         printf("%" PRId64 ",%.7g,%.7g,%.7g,%.5g,%.5g,%.5g\n",
-               t_us, mapped.gx, mapped.gy, mapped.gz,
+               mapped.t_data_ready_us, mapped.gx, mapped.gy, mapped.gz,
                mapped.ax, mapped.ay, mapped.az);
         n_valid++;
     }
@@ -263,6 +274,16 @@ static void imu_task(void *arg)
 
     ESP_LOGI(TAG, "imu_task_start");
 
+    const TaskHandle_t self = xTaskGetCurrentTaskHandle();
+    const esp_err_t trigger_err =
+        imu_trigger_init((gpio_num_t)APP_MPU9250_INT_GPIO, self);
+    if (trigger_err != ESP_OK) {
+        ESP_LOGE(TAG, "DATA_RDY GPIO%d init failed (%s)",
+                 APP_MPU9250_INT_GPIO, esp_err_to_name(trigger_err));
+        vTaskDelete(NULL);
+        return;
+    }
+
     bool ready = false;
     while (!ready) {
         ready = init_sensor();
@@ -293,7 +314,7 @@ static void imu_task(void *arg)
     uint32_t ahrs_us_sum = 0;
     uint32_t ahrs_us_max = 0;
     int64_t t_prev_us = 0;
-    int64_t stats_t0_us = esp_timer_get_time();
+    int64_t stats_t0_us = 0;
 #if APP_LOG_AHRS_CSV
     const int ahrs_csv_target = (int)(APP_LOG_AHRS_CSV_S * (float)APP_SAMPLE_HZ + 0.5f);
     unsigned ahrs_csv_n = 0;
@@ -309,18 +330,33 @@ static void imu_task(void *arg)
              APP_LOG_AHRS_CSV_S, ahrs_csv_algo);
 #endif
 
-    const TickType_t period_ticks = sample_period_ticks();
-    TickType_t last_wake = xTaskGetTickCount();
-
     for (;;) {
-        vTaskDelayUntil(&last_wake, period_ticks);
-
-        const int64_t now_us = esp_timer_get_time();
+        int64_t t_data_ready_us = 0;
+        uint32_t pending_notifications = 0;
+        uint32_t data_ready_sequence = 0;
+        if (!imu_trigger_wait(&t_data_ready_us, portMAX_DELAY, &pending_notifications,
+                              &data_ready_sequence)) {
+            if (pending_notifications > 0u) {
+                sequence = data_ready_sequence;
+            }
+            if (pending_notifications > 1u) {
+                ESP_LOGW(TAG, "ambiguous DATA_RDY burst count=%lu missed=%lu",
+                         (unsigned long)pending_notifications,
+                         (unsigned long)imu_trigger_missed_data_ready());
+            }
+            continue;
+        }
+        sequence = data_ready_sequence;
         float dt = dt_nom;
         if (t_prev_us > 0) {
-            dt = (float)(now_us - t_prev_us) / 1e6f;
+            const int64_t interval_us = t_data_ready_us - t_prev_us;
+            dt = (float)interval_us / 1e6f;
+            imu_trigger_note_interval(interval_us, (int64_t)(1000000 / APP_SAMPLE_HZ));
         }
-        t_prev_us = now_us;
+        t_prev_us = t_data_ready_us;
+        if (stats_t0_us == 0) {
+            stats_t0_us = t_data_ready_us;
+        }
 
         const float dt_used = clampf(dt, 0.5f * dt_nom, 2.0f * dt_nom);
 
@@ -330,8 +366,10 @@ static void imu_task(void *arg)
         if (err != ESP_OK) {
             continue;
         }
+        if (!imu_trigger_finish_read(data_ready_sequence)) {
+            continue;
+        }
 
-        sequence++;
         imu_sample_t raw = {
             .ax = accel_g[0],
             .ay = accel_g[1],
@@ -340,6 +378,7 @@ static void imu_task(void *arg)
             .gy = gyro_rad[1],
             .gz = gyro_rad[2],
             .sequence = sequence,
+            .t_data_ready_us = t_data_ready_us,
         };
 
         imu_sample_t sample;
@@ -363,7 +402,7 @@ static void imu_task(void *arg)
             continue;
         }
 
-        emit_quat(&q);
+        emit_quat(&sample, &q);
 
 #if APP_LOG_AHRS_CSV
         if (ahrs_csv_active) {
@@ -373,18 +412,18 @@ static void imu_task(void *arg)
                        ahrs_csv_algo, APP_SAMPLE_HZ);
                 printf("t_us,gx,gy,gz,ax,ay,az,qw,qx,qy,qz\n");
                 ahrs_csv_header = true;
-                ahrs_csv_t0_us = now_us;
+                ahrs_csv_t0_us = t_data_ready_us;
             }
             printf("%" PRId64 ",%.7g,%.7g,%.7g,%.5g,%.5g,%.5g,%.7g,%.7g,%.7g,%.7g\n",
-                   now_us, sample.gx, sample.gy, sample.gz,
+                   t_data_ready_us, sample.gx, sample.gy, sample.gz,
                    sample.ax, sample.ay, sample.az,
                    q.w, q.x, q.y, q.z);
             ahrs_csv_n++;
-            const float dump_age = (float)(now_us - ahrs_csv_t0_us) / 1e6f;
+            const float dump_age = (float)(t_data_ready_us - ahrs_csv_t0_us) / 1e6f;
             if ((int)ahrs_csv_n >= ahrs_csv_target || dump_age >= APP_LOG_AHRS_CSV_S) {
                 ESP_LOGI(TAG, "ahrs CSV dump done n=%u target=%d", ahrs_csv_n, ahrs_csv_target);
                 ahrs_csv_active = false;
-                stats_t0_us = now_us;
+                stats_t0_us = t_data_ready_us;
             } else {
                 continue; /* pause 1 Hz stats so 115200 can carry 100 Hz CSV */
             }
@@ -406,7 +445,7 @@ static void imu_task(void *arg)
         acc_sum += acc_mag;
         gyr_sum += gyr_mag;
 
-        const float stats_age = (float)(now_us - stats_t0_us) / 1e6f;
+        const float stats_age = (float)(t_data_ready_us - stats_t0_us) / 1e6f;
         if (stats_age >= IMU_STATS_PERIOD_S) {
             const float dt_mean = (stats_n > 0) ? (dt_sum / (float)stats_n) : 0.0f;
             const float acc_mean = (stats_n > 0) ? (acc_sum / (float)stats_n) : 0.0f;
@@ -415,13 +454,19 @@ static void imu_task(void *arg)
             ESP_LOGI(TAG,
                      "stats n=%lu |q|=%.4f |a|=%.3fg |g|=%.5f rad/s "
                      "dt_mean=%.4fs dt_max=%.4fs ahrs_us_mean=%lu ahrs_us_max=%lu "
-                     "seq=%lu i2c_err=%lu bad=%lu ahrs_reset=%lu",
+                     "seq=%lu i2c_err=%lu bad=%lu ahrs_reset=%lu missed=%lu read_overrun=%lu interval_bad=%lu "
+                     "ble_qdrop=%lu ble_txfail=%lu",
                      (unsigned long)stats_n, qn, acc_mean, gyr_mean, dt_mean, dt_max,
                      (unsigned long)ahrs_us_mean, (unsigned long)ahrs_us_max,
                      (unsigned long)sequence,
                      (unsigned long)mpu9250_i2c_error_count(),
                      (unsigned long)bad_samples,
-                     (unsigned long)ahrs_resets);
+                     (unsigned long)ahrs_resets,
+                     (unsigned long)imu_trigger_missed_data_ready(),
+                     (unsigned long)imu_trigger_read_overruns(),
+                     (unsigned long)imu_trigger_interval_anomalies(),
+                     (unsigned long)ble_app_tx_queue_drop_count(),
+                     (unsigned long)ble_app_tx_failure_count());
             stats_n = 0;
             dt_sum = 0.0f;
             dt_max = 0.0f;
@@ -429,7 +474,7 @@ static void imu_task(void *arg)
             gyr_sum = 0.0f;
             ahrs_us_sum = 0;
             ahrs_us_max = 0;
-            stats_t0_us = now_us;
+            stats_t0_us = t_data_ready_us;
         }
     }
 }

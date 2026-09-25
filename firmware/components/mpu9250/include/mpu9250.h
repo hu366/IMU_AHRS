@@ -19,6 +19,8 @@ typedef struct {
 } mpu9250_config_t;
 
 esp_err_t mpu9250_init(const mpu9250_config_t *cfg);
+/* Configure the MPU9250 DATA_RDY interrupt after the host GPIO ISR is ready. */
+esp_err_t mpu9250_enable_data_ready(bool active_high);
 esp_err_t mpu9250_read(float accel_g[3], float gyro_rad_s[3]);
 uint8_t mpu9250_whoami(void);
 const char *mpu9250_whoami_name(uint8_t id);

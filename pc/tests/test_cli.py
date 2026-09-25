@@ -14,10 +14,11 @@ def test_help_exits_zero():
 
 
 def test_demo_flag_and_name():
-    args = parse_args(["--demo", "--name", "IMU-AHRS"])
+    args = parse_args(["--demo", "--name", "IMU-AHRS", "--sync-report"])
     assert args.demo is True
     assert args.name == "IMU-AHRS"
     assert args.timeout == 1.0
+    assert args.sync_report is True
 
 
 def test_demo_quaternion_identity_then_x_90():

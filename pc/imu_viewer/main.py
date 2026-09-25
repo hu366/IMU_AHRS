@@ -51,6 +51,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="do not print each parsed quaternion in BLE mode",
     )
+    parser.add_argument(
+        "--sync-period",
+        type=float,
+        default=1.0,
+        help="seconds between BLE TSQ clock-sync exchanges",
+    )
+    parser.add_argument(
+        "--sync-report",
+        action="store_true",
+        help="print TSQ/TSR clock-map quality once per sync exchange",
+    )
     return parser.parse_args(argv)
 
 
@@ -63,6 +74,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.timeout <= 0:
         log.error("--timeout must be positive")
+        return 2
+    if args.sync_period <= 0:
+        log.error("--sync-period must be positive")
         return 2
 
     store = PoseStore(timeout_s=args.timeout)
@@ -80,13 +94,26 @@ def main(argv: list[str] | None = None) -> int:
         log.info("demo mode: cycling 90°+ rotations about X, Y, Z (no BLE)")
     else:
         store.set_mode("ble")
+        from imu_viewer.alignment import CameraFrameAligner
         from imu_viewer.ble_client import BleClient
+        from imu_viewer.camera_time import CameraTimeAdapter
+        from imu_viewer.clock_sync import AffineClockMapper
+
+        # Camera SDK code can receive this adapter/aligner pair without
+        # reaching into the BLE transport or renderer.
+        clock_mapper = AffineClockMapper()
+        camera_time_adapter = CameraTimeAdapter()
+        frame_aligner = CameraFrameAligner(camera_time_adapter=camera_time_adapter)
 
         ble = BleClient(
             store,
             name=args.name,
             scan_timeout=args.scan_timeout,
             print_frames=not args.quiet,
+            clock_mapper=clock_mapper,
+            frame_aligner=frame_aligner,
+            sync_period_s=args.sync_period,
+            sync_report=args.sync_report,
         )
         worker = threading.Thread(
             target=ble.run,
@@ -94,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
             name="bleak",
             daemon=True,
         )
-        log.info("BLE mode: scanning for %s", args.name)
+        log.info("BLE mode: scanning for %s; TSQ every %.2fs", args.name, args.sync_period)
 
     worker.start()
     try:

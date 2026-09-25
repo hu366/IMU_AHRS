@@ -14,6 +14,8 @@ static const char *TAG = "mpu9250";
 #define MPU9250_REG_GYRO_CONFIG    0x1B
 #define MPU9250_REG_ACCEL_CONFIG   0x1C
 #define MPU9250_REG_ACCEL_CONFIG2  0x1D
+#define MPU9250_REG_INT_PIN_CFG    0x37
+#define MPU9250_REG_INT_ENABLE     0x38
 #define MPU9250_REG_ACCEL_XOUT_H   0x3B
 #define MPU9250_REG_USER_CTRL      0x6A
 #define MPU9250_REG_PWR_MGMT_1     0x6B
@@ -304,6 +306,29 @@ esp_err_t mpu9250_init(const mpu9250_config_t *cfg)
     s_ctx.whoami = whoami_after;
     s_ctx.ready = true;
     ESP_LOGI(TAG, "configured SMPLRT_DIV=%u DLPF=41Hz", smplrt_div);
+    return ESP_OK;
+}
+
+esp_err_t mpu9250_enable_data_ready(bool active_high)
+{
+    if (!s_ctx.ready) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    /* Push-pull and clear DATA_RDY on a sensor register read. INT_ENABLE is
+     * deliberately written separately so the application can install the
+     * ESP32 GPIO ISR before the first edge is generated. */
+    const uint8_t int_pin_cfg = active_high ? 0x10u : 0x90u;
+    esp_err_t err = reg_write(MPU9250_REG_INT_PIN_CFG, int_pin_cfg);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = reg_write(MPU9250_REG_INT_ENABLE, 0x01);
+    if (err != ESP_OK) {
+        return err;
+    }
+    ESP_LOGI(TAG, "DATA_RDY interrupt enabled (INT_PIN_CFG=0x%02X INT_ENABLE=0x01)",
+             int_pin_cfg);
     return ESP_OK;
 }
 

@@ -1,8 +1,21 @@
-# Project docs (kept local for now)
+# Project documentation: publish only the root README. Keep third-party
+# licenses and source-origin notices with their vendored components.
 /doc/
+*.md
+*.markdown
+*.mdx
+*.rst
+*.adoc
+!/README.md
+!firmware/components/**/LICENSE
+!firmware/components/**/ORIGIN.md
 *.rar
 *.zip
 *.pdf
+
+# Local capture logs
+/.esp-com10-*.log
+/.pc-sync-*.log
 
 # ESP-IDF
 firmware/build/
@@ -15,7 +28,7 @@ firmware/dependencies.lock
 pc/analysis/out/*
 !pc/analysis/out/.gitkeep
 !pc/analysis/out/vqf_vs_madgwick.csv
-!pc/analysis/out/vqf_compare.txt
+pc/analysis/out/vqf_compare.txt
 pc/analysis/data/still.log
 
 # Python

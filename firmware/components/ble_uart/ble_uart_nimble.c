@@ -311,6 +311,55 @@ static void show_passkey(uint32_t passkey)
     ESP_LOGW(TAG, "");
 }
 
+static void log_connection_params(uint16_t conn_handle)
+{
+    struct ble_gap_conn_desc desc;
+    if (ble_gap_conn_find(conn_handle, &desc) != 0) {
+        return;
+    }
+    ESP_LOGI(TAG, "link conn_itvl=%u (%lu us) latency=%u supervision=%u0ms",
+             desc.conn_itvl, (unsigned long)desc.conn_itvl * 1250u,
+             desc.conn_latency, desc.supervision_timeout);
+}
+
+static bool preferred_connection_params(struct ble_gap_upd_params *params)
+{
+    if (params == NULL
+        || s_cfg.connection_interval_min == 0u
+        || s_cfg.connection_interval_max < s_cfg.connection_interval_min
+        || s_cfg.supervision_timeout == 0u) {
+        return false;
+    }
+
+    *params = (struct ble_gap_upd_params){
+        .itvl_min = s_cfg.connection_interval_min,
+        .itvl_max = s_cfg.connection_interval_max,
+        .latency = s_cfg.connection_latency,
+        .supervision_timeout = s_cfg.supervision_timeout,
+        .min_ce_len = 0u,
+        .max_ce_len = 0u,
+    };
+    return true;
+}
+
+static void request_preferred_connection_params(uint16_t conn_handle)
+{
+    struct ble_gap_upd_params params;
+    if (!preferred_connection_params(&params)) {
+        return;
+    }
+
+    const int rc = ble_gap_update_params(conn_handle, &params);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "conn param request rc=%d", rc);
+        return;
+    }
+    ESP_LOGI(TAG, "request link conn_itvl=%u-%u (%u-%u us) latency=%u supervision=%u0ms",
+             params.itvl_min, params.itvl_max,
+             (unsigned)params.itvl_min * 1250u, (unsigned)params.itvl_max * 1250u,
+             params.latency, params.supervision_timeout);
+}
+
 static int gap_event(struct ble_gap_event *event, void *arg)
 {
     struct ble_gap_conn_desc desc;
@@ -325,6 +374,8 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         if (event->connect.status == 0) {
             s_conn_handle = event->connect.conn_handle;
             s_subscribed  = false;
+            log_connection_params(event->connect.conn_handle);
+            request_preferred_connection_params(event->connect.conn_handle);
             /* Start pairing immediately (rather than lazily on the
              * first encrypted attribute access). */
             if (s_cfg.encrypted) {
@@ -346,6 +397,20 @@ static int gap_event(struct ble_gap_event *event, void *arg)
 
     case BLE_GAP_EVENT_CONN_UPDATE:
         ESP_LOGI(TAG, "conn_update status=%d", event->conn_update.status);
+        if (event->conn_update.status == 0) {
+            log_connection_params(event->conn_update.conn_handle);
+        }
+        return 0;
+
+    case BLE_GAP_EVENT_CONN_UPDATE_REQ:
+    case BLE_GAP_EVENT_L2CAP_UPDATE_REQ:
+        if (preferred_connection_params(event->conn_update_req.self_params)) {
+            const struct ble_gap_upd_params *params = event->conn_update_req.self_params;
+            ESP_LOGI(TAG, "constrain peer link request to conn_itvl=%u-%u (%u-%u us)",
+                     params->itvl_min, params->itvl_max,
+                     (unsigned)params->itvl_min * 1250u,
+                     (unsigned)params->itvl_max * 1250u);
+        }
         return 0;
 
     case BLE_GAP_EVENT_ADV_COMPLETE:

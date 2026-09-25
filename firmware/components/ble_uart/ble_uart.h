@@ -85,6 +85,15 @@ typedef struct {
 
     /** Byte handler for RX writes. NULL discards incoming data. */
     ble_uart_rx_cb_t ble_uart_on_rx;
+
+    /** Optional preferred connection parameters for a continuous data stream.
+     *  All three interval / timeout fields must be nonzero to enable a
+     *  NimBLE request. Intervals are in 1.25 ms units; timeout is in 10 ms
+     *  units. Backends that cannot apply the preference ignore it. */
+    uint16_t connection_interval_min;
+    uint16_t connection_interval_max;
+    uint16_t connection_latency;
+    uint16_t supervision_timeout;
 } ble_uart_config_t;
 
 /* ----- Lifecycle ------------------------------------------------------ */
